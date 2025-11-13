@@ -1,0 +1,378 @@
+import os
+import logging
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+import asyncio
+from threading import Thread
+import sqlite3
+from datetime import datetime
+
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Конфигурация
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+MANAGER_CHAT_ID = os.getenv('MANAGER_CHAT_ID')
+SHARED_SECRET = os.getenv('SHARED_SECRET', 'default-secret-key')
+PORT = int(os.getenv('PORT', 8000))
+WEB_APP_URL = os.getenv('WEB_APP_URL', 'http://localhost:8000')
+DB_PATH = os.getenv('DB_PATH', 'jobs.db')
+
+app = Flask(__name__, static_folder='static')
+CORS(app)
+
+# Глобальная переменная для бота
+bot_app = None
+
+# Инициализация БД
+def init_db():
+    """Инициализация базы данных"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Таблица для постов/вакансий
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_name TEXT,
+            text TEXT,
+            link TEXT,
+            content_hash TEXT UNIQUE,
+            source_type TEXT DEFAULT 'facebook',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Таблица для FB групп
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS fb_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id TEXT UNIQUE,
+            group_name TEXT,
+            enabled INTEGER DEFAULT 1,
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_content_hash ON jobs(content_hash)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_created_at ON jobs(created_at DESC)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_group_id ON fb_groups(group_id)')
+    
+    conn.commit()
+    conn.close()
+    logger.info("База данных инициализирована")
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /start с кнопкой для открытия мини-апа"""
+    keyboard = {
+        "inline_keyboard": [[
+            {
+                "text": "🔍 Открыть поиск вакансий",
+                "web_app": {"url": f"{WEB_APP_URL}/index.html"}
+            }
+        ]]
+    }
+    
+    await update.message.reply_text(
+        "👋 Привет! Нажми на кнопку ниже, чтобы открыть поиск вакансий из Facebook:",
+        reply_markup=keyboard
+    )
+
+async def send_telegram_message(chat_id: str, message: str):
+    """Отправка сообщения через Telegram бота"""
+    if bot_app and bot_app.bot:
+        try:
+            await bot_app.bot.send_message(
+                chat_id=chat_id,
+                text=message,
+                parse_mode='HTML'
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка отправки сообщения: {e}")
+            return False
+    return False
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    return jsonify({"status": "ok", "service": "fb-job-parser"})
+
+@app.route('/post', methods=['POST'])
+def post_job():
+    """Endpoint для получения вакансий от FB парсера"""
+    # Проверка секретного ключа
+    secret = request.headers.get('X-SECRET')
+    if secret != SHARED_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+    
+    try:
+        import hashlib
+        
+        data = request.json
+        group_name = data.get('chat_title', 'Неизвестная группа')
+        text = data.get('text', '')
+        link = data.get('link', '')
+        source_type = data.get('source_type', 'facebook')
+        
+        # Создаем хеш для дедупликации
+        content = f"{group_name}:{text[:200]}"
+        content_hash = hashlib.md5(content.encode()).hexdigest()
+        
+        # Сохранение в БД с проверкой дубликатов
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute(
+                'INSERT INTO jobs (group_name, text, link, content_hash, source_type) VALUES (?, ?, ?, ?, ?)',
+                (group_name, text, link, content_hash, source_type)
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.close()
+            logger.info(f"Дубликат пропущен: {group_name[:30]}...")
+            return jsonify({"status": "duplicate", "message": "Job already exists"}), 200
+        
+        conn.close()
+        
+        # Формирование сообщения для менеджера
+        message = f"📘 <b>Новая вакансия из Facebook</b>\n\n"
+        message += f"📢 Группа: {group_name}\n"
+        message += f"📝 Текст: {text[:200]}{'...' if len(text) > 200 else ''}\n"
+        if link:
+            message += f"🔗 Ссылка: {link}\n"
+        
+        # Отправка сообщения
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(
+            send_telegram_message(MANAGER_CHAT_ID, message)
+        )
+        loop.close()
+        
+        if result:
+            return jsonify({"status": "success"}), 200
+        else:
+            return jsonify({"error": "Failed to send message"}), 500
+            
+    except Exception as e:
+        logger.error(f"Ошибка обработки запроса: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/jobs', methods=['GET'])
+def get_jobs():
+    """Получение списка вакансий для мини-апа"""
+    try:
+        limit = int(request.args.get('limit', 50))
+        offset = int(request.args.get('offset', 0))
+        
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT id, group_name, text, link, created_at FROM jobs ORDER BY created_at DESC LIMIT ? OFFSET ?',
+            (limit, offset)
+        )
+        jobs = cursor.fetchall()
+        
+        cursor.execute('SELECT COUNT(*) FROM jobs')
+        total = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        return jsonify({
+            "jobs": [
+                {
+                    "id": job[0],
+                    "group_name": job[1],
+                    "text": job[2],
+                    "link": job[3],
+                    "created_at": job[4]
+                }
+                for job in jobs
+            ],
+            "total": total
+        })
+    except Exception as e:
+        logger.error(f"Ошибка получения вакансий: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/groups', methods=['GET'])
+def get_groups():
+    """Получение списка отслеживаемых FB групп"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('SELECT id, group_id, group_name, enabled, added_at FROM fb_groups ORDER BY added_at DESC')
+        groups = cursor.fetchall()
+        conn.close()
+        
+        return jsonify({
+            "groups": [
+                {
+                    "id": g[0],
+                    "group_id": g[1],
+                    "group_name": g[2],
+                    "enabled": bool(g[3]),
+                    "added_at": g[4]
+                }
+                for g in groups
+            ]
+        })
+    except Exception as e:
+        logger.error(f"Ошибка получения групп: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/groups', methods=['POST'])
+def add_group():
+    """Добавление FB группы для отслеживания"""
+    try:
+        data = request.json
+        group_id = data.get('group_id', '').strip()
+        group_name = data.get('group_name', '').strip()
+        
+        if not group_id:
+            return jsonify({"error": "Group ID is required"}), 400
+        
+        # Извлечение ID из URL если нужно
+        import re
+        # Если это ссылка на группу - извлекаем ID
+        url_match = re.search(r'facebook\.com/groups/([^/?]+)', group_id)
+        if url_match:
+            group_id = url_match.group(1)
+        
+        # Если имя группы не указано, используем ID
+        if not group_name:
+            group_name = group_id
+        
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                'INSERT INTO fb_groups (group_id, group_name) VALUES (?, ?)',
+                (group_id, group_name)
+            )
+            conn.commit()
+            new_id = cursor.lastrowid
+            conn.close()
+            
+            return jsonify({
+                "status": "success",
+                "group": {
+                    "id": new_id,
+                    "group_id": group_id,
+                    "group_name": group_name
+                }
+            })
+        except sqlite3.IntegrityError:
+            conn.close()
+            return jsonify({"error": "Group already exists"}), 409
+            
+    except Exception as e:
+        logger.error(f"Ошибка добавления группы: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/groups/<int:group_id>', methods=['DELETE'])
+def delete_group(group_id):
+    """Удаление FB группы"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM fb_groups WHERE id = ?', (group_id,))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({"status": "success"})
+    except Exception as e:
+        logger.error(f"Ошибка удаления группы: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/groups/<int:group_id>/toggle', methods=['POST'])
+def toggle_group(group_id):
+    """Включение/отключение группы"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('SELECT enabled FROM fb_groups WHERE id = ?', (group_id,))
+        result = cursor.fetchone()
+        
+        if not result:
+            conn.close()
+            return jsonify({"error": "Group not found"}), 404
+        
+        new_status = 0 if result[0] else 1
+        cursor.execute('UPDATE fb_groups SET enabled = ? WHERE id = ?', (new_status, group_id))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({"status": "success", "enabled": bool(new_status)})
+    except Exception as e:
+        logger.error(f"Ошибка переключения группы: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/')
+def root():
+    """Главная страница"""
+    return send_from_directory('static', 'index.html')
+
+@app.route('/<path:path>')
+def static_files(path):
+    """Статические файлы"""
+    return send_from_directory('static', path)
+
+def run_flask():
+    """Запуск Flask сервера"""
+    app.run(host='0.0.0.0', port=PORT, debug=False)
+
+async def run_bot():
+    """Запуск Telegram бота"""
+    global bot_app
+    
+    bot_app = Application.builder().token(BOT_TOKEN).build()
+    
+    # Регистрация обработчиков
+    bot_app.add_handler(CommandHandler("start", start_command))
+    
+    # Запуск бота
+    await bot_app.initialize()
+    await bot_app.start()
+    logger.info("Бот запущен")
+    
+    # Держим бота активным
+    await bot_app.updater.start_polling()
+    await asyncio.Event().wait()
+
+def main():
+    """Главная функция запуска"""
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN не установлен!")
+        return
+    
+    if not MANAGER_CHAT_ID:
+        logger.error("MANAGER_CHAT_ID не установлен!")
+        return
+    
+    # Инициализация БД
+    init_db()
+    
+    logger.info(f"Запуск FB Job Parser на порту {PORT}")
+    logger.info(f"Web App URL: {WEB_APP_URL}")
+    
+    # Запуск Flask в отдельном потоке
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    
+    # Запуск бота
+    try:
+        asyncio.run(run_bot())
+    except KeyboardInterrupt:
+        logger.info("Остановка сервера...")
+
+if __name__ == '__main__':
+    main()
