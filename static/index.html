@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Facebook Job Parser</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: var(--tg-theme-bg-color, #ffffff);
+            color: var(--tg-theme-text-color, #000000);
+            padding: 16px;
+            padding-bottom: 80px;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #4267B2 0%, #1877F2 100%);
+            padding: 20px;
+            border-radius: 16px;
+            margin-bottom: 16px;
+            color: white;
+        }
+
+        h1 {
+            font-size: 24px;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .stats {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+            background: var(--tg-theme-secondary-bg-color, #f5f5f5);
+            padding: 4px;
+            border-radius: 12px;
+        }
+
+        .tab {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            background: transparent;
+            color: var(--tg-theme-text-color, #000000);
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .tab.active {
+            background: #4267B2;
+            color: white;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .job-card {
+            background: var(--tg-theme-secondary-bg-color, #f5f5f5);
+            padding: 16px;
+            border-radius: 12px;
+            margin-bottom: 12px;
+            border-left: 4px solid #4267B2;
+        }
+
+        .job-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+            margin-bottom: 8px;
+        }
+
+        .job-group {
+            font-weight: 600;
+            color: #4267B2;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .job-date {
+            font-size: 12px;
+            opacity: 0.6;
+        }
+
+        .job-text {
+            font-size: 14px;
+            line-height: 1.5;
+            margin-bottom: 8px;
+            max-height: 150px;
+            overflow: hidden;
+        }
+
+        .job-link {
+            display: inline-block;
+            color: #4267B2;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .group-item {
+            background: var(--tg-theme-secondary-bg-color, #f5f5f5);
+            padding: 16px;
+            border-radius: 12px;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .group-item.disabled {
+            opacity: 0.5;
+        }
+
+        .group-info {
+            flex: 1;
+        }
+
+        .group-name {
+            font-weight: 600;
+            font-size: 16px;
+            margin-bottom: 4px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .group-id {
+            font-size: 13px;
+            opacity: 0.7;
+            margin-bottom: 4px;
+        }
+
+        .group-date {
+            font-size: 12px;
+            opacity: 0.6;
+        }
+
+        .group-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .toggle-btn {
+            background: #34c759;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+
+        .toggle-btn.disabled {
+            background: #ff9500;
+        }
+
+        .delete-btn {
+            background: #ff3b30;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+
+        .add-group-form {
+            background: var(--tg-theme-secondary-bg-color, #f5f5f5);
+            padding: 16px;
+            border-radius: 12px;
+            margin-bottom: 16px;
+        }
+
+        .form-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 12px;
+            color: #4267B2;
+        }
+
+        .input-group {
+            margin-bottom: 12px;
+        }
+
+        .input-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .input-group input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+            font-size: 16px;
+            background: var(--tg-theme-bg-color, #ffffff);
+            color: var(--tg-theme-text-color, #000000);
+        }
+
+        .input-hint {
+            font-size: 12px;
+            opacity: 0.6;
+            margin-top: 4px;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 12px;
+            background: #4267B2;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px 16px;
+            opacity: 0.6;
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            opacity: 0.6;
+        }
+
+        .error {
+            background: #ff3b30;
+            color: white;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            font-size: 14px;
+        }
+
+        .success {
+            background: #34c759;
+            color: white;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            font-size: 14px;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .badge-active {
+            background: #34c759;
+            color: white;
+        }
+
+        .badge-disabled {
+            background: #ff9500;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📘 Facebook Job Parser</h1>
+        <div class="stats" id="stats">Загрузка...</div>
+    </div>
+
+    <div class="tabs">
+        <button class="tab active" onclick="switchTab('jobs')">Вакансии</button>
+        <button class="tab" onclick="switchTab('groups')">FB Группы</button>
+    </div>
+
+    <div id="error-message"></div>
+    <div id="success-message"></div>
+
+    <div id="jobs-tab" class="tab-content active">
+        <div id="jobs-list">
+            <div class="loading">Загрузка вакансий...</div>
+        </div>
+    </div>
+
+    <div id="groups-tab" class="tab-content">
+        <div class="add-group-form">
+            <div class="form-title">➕ Добавить Facebook группу</div>
+            <div class="input-group">
+                <label for="group-id">ID или URL группы</label>
+                <input 
+                    type="text" 
+                    id="group-id" 
+                    placeholder="ProjectAmazon или https://facebook.com/groups/ProjectAmazon"
+                >
+                <div class="input-hint">Можно указать ID группы или полную ссылку</div>
+            </div>
+            <div class="input-group">
+                <label for="group-name">Название группы (опционально)</label>
+                <input 
+                    type="text" 
+                    id="group-name" 
+                    placeholder="Project Amazon Jobs"
+                >
+                <div class="input-hint">Оставьте пустым, чтобы использовать ID как название</div>
+            </div>
+            <button class="btn" onclick="addGroup()">Добавить группу</button>
+        </div>
+
+        <div id="groups-list">
+            <div class="loading">Загрузка групп...</div>
+        </div>
+    </div>
+
+    <script>
+        // Инициализация Telegram Web App
+        let tg = window.Telegram.WebApp;
+        tg.expand();
+        tg.ready();
+
+        // API endpoint
+        const API_BASE = window.location.origin;
+
+        // Состояние
+        let currentTab = 'jobs';
+
+        // Переключение табов
+        function switchTab(tab) {
+            currentTab = tab;
+            
+            // Обновляем кнопки
+            document.querySelectorAll('.tab').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+
+            // Обновляем контент
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+            document.getElementById(`${tab}-tab`).classList.add('active');
+
+            // Загружаем данные
+            if (tab === 'jobs') {
+                loadJobs();
+            } else if (tab === 'groups') {
+                loadGroups();
+            }
+        }
+
+        // Загрузка вакансий
+        async function loadJobs() {
+            try {
+                const response = await fetch(`${API_BASE}/api/jobs?limit=50`);
+                const data = await response.json();
+
+                const jobsList = document.getElementById('jobs-list');
+                
+                if (data.jobs && data.jobs.length > 0) {
+                    jobsList.innerHTML = data.jobs.map(job => `
+                        <div class="job-card">
+                            <div class="job-header">
+                                <div class="job-group">
+                                    📘 ${escapeHtml(job.group_name)}
+                                </div>
+                                <div class="job-date">${formatDate(job.created_at)}</div>
+                            </div>
+                            <div class="job-text">${escapeHtml(job.text)}</div>
+                            ${job.link ? `<a href="${job.link}" class="job-link" target="_blank">Открыть на Facebook →</a>` : ''}
+                        </div>
+                    `).join('');
+
+                    document.getElementById('stats').textContent = `Всего вакансий: ${data.total}`;
+                } else {
+                    jobsList.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">📭</div>
+                            <div>Пока нет вакансий</div>
+                            <div style="margin-top: 8px; font-size: 13px;">Добавьте FB группы и запустите парсер</div>
+                        </div>
+                    `;
+                    document.getElementById('stats').textContent = 'Нет данных';
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки вакансий:', error);
+                showError('Ошибка загрузки вакансий');
+            }
+        }
+
+        // Загрузка групп
+        async function loadGroups() {
+            try {
+                const response = await fetch(`${API_BASE}/api/groups`);
+                const data = await response.json();
+
+                const groupsList = document.getElementById('groups-list');
+                
+                if (data.groups && data.groups.length > 0) {
+                    groupsList.innerHTML = data.groups.map(group => `
+                        <div class="group-item ${!group.enabled ? 'disabled' : ''}">
+                            <div class="group-info">
+                                <div class="group-name">
+                                    ${escapeHtml(group.group_name)}
+                                    <span class="badge ${group.enabled ? 'badge-active' : 'badge-disabled'}">
+                                        ${group.enabled ? 'Активна' : 'Отключена'}
+                                    </span>
+                                </div>
+                                <div class="group-id">ID: ${escapeHtml(group.group_id)}</div>
+                                <div class="group-date">Добавлена: ${formatDate(group.added_at)}</div>
+                            </div>
+                            <div class="group-actions">
+                                <button class="toggle-btn ${!group.enabled ? 'disabled' : ''}" onclick="toggleGroup(${group.id})">
+                                    ${group.enabled ? '⏸️' : '▶️'}
+                                </button>
+                                <button class="delete-btn" onclick="deleteGroup(${group.id})">🗑️</button>
+                            </div>
+                        </div>
+                    `).join('');
+                } else {
+                    groupsList.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">📘</div>
+                            <div>Нет добавленных групп</div>
+                            <div style="margin-top: 8px; font-size: 13px;">Добавьте первую группу выше</div>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки групп:', error);
+                showError('Ошибка загрузки групп');
+            }
+        }
+
+        // Добавление группы
+        async function addGroup() {
+            const groupIdInput = document.getElementById('group-id');
+            const groupNameInput = document.getElementById('group-name');
+            
+            const groupId = groupIdInput.value.trim();
+            const groupName = groupNameInput.value.trim();
+
+            if (!groupId) {
+                showError('Введите ID или URL группы');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/api/groups`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ 
+                        group_id: groupId,
+                        group_name: groupName || groupId
+                    })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    showSuccess(`Группа "${data.group.group_name}" успешно добавлена`);
+                    groupIdInput.value = '';
+                    groupNameInput.value = '';
+                    loadGroups();
+                } else {
+                    const data = await response.json();
+                    showError(data.error || 'Ошибка добавления группы');
+                }
+            } catch (error) {
+                console.error('Ошибка добавления группы:', error);
+                showError('Ошибка добавления группы');
+            }
+        }
+
+        // Переключение состояния группы
+        async function toggleGroup(groupId) {
+            try {
+                const response = await fetch(`${API_BASE}/api/groups/${groupId}/toggle`, {
+                    method: 'POST'
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    showSuccess(data.enabled ? 'Группа активирована' : 'Группа отключена');
+                    loadGroups();
+                } else {
+                    showError('Ошибка переключения группы');
+                }
+            } catch (error) {
+                console.error('Ошибка переключения группы:', error);
+                showError('Ошибка переключения группы');
+            }
+        }
+
+        // Удаление группы
+        async function deleteGroup(groupId) {
+            if (!confirm('Удалить эту группу?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/api/groups/${groupId}`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok) {
+                    showSuccess('Группа удалена');
+                    loadGroups();
+                } else {
+                    showError('Ошибка удаления группы');
+                }
+            } catch (error) {
+                console.error('Ошибка удаления группы:', error);
+                showError('Ошибка удаления группы');
+            }
+        }
+
+        // Утилиты
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function formatDate(dateStr) {
+            const date = new Date(dateStr);
+            const now = new Date();
+            const diff = now - date;
+            
+            const minutes = Math.floor(diff / 60000);
+            const hours = Math.floor(diff / 3600000);
+            const days = Math.floor(diff / 86400000);
+
+            if (minutes < 1) return 'только что';
+            if (minutes < 60) return `${minutes} мин назад`;
+            if (hours < 24) return `${hours} ч назад`;
+            if (days < 7) return `${days} дн назад`;
+            
+            return date.toLocaleDateString('ru-RU');
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error-message');
+            errorDiv.innerHTML = `<div class="error">${escapeHtml(message)}</div>`;
+            setTimeout(() => {
+                errorDiv.innerHTML = '';
+            }, 3000);
+        }
+
+        function showSuccess(message) {
+            const successDiv = document.getElementById('success-message');
+            successDiv.innerHTML = `<div class="success">${escapeHtml(message)}</div>`;
+            setTimeout(() => {
+                successDiv.innerHTML = '';
+            }, 3000);
+        }
+
+        // Начальная загрузка
+        loadJobs();
+    </script>
+</body>
+</html>
