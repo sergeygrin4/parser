@@ -3,9 +3,9 @@ import os
 import logging
 import time
 import hashlib
+from urllib.parse import urlparse
 
 from facebook_scraper import get_posts
-
 import requests
 
 from db import get_conn
@@ -17,7 +17,7 @@ logging.basicConfig(
 log = logging.getLogger("fb_parser")
 
 API_URL = os.getenv("BOT_API") or os.getenv(
-    "PARSER_API_URL",  # на всякий случай альтернативное имя
+    "PARSER_API_URL",
     "http://localhost:8080/post",
 )
 
@@ -37,9 +37,6 @@ FB_COOKIES = os.getenv("FB_COOKIES", "")
 PAGE_LIMIT = int(os.getenv("FB_PAGE_LIMIT", "5"))
 
 
-# -------------- Вспомогательное --------------
-
-
 def extract_group_id(group_link: str) -> str:
     """
     Из полного URL группы достаём её slug/id для facebook_scraper.
@@ -48,8 +45,6 @@ def extract_group_id(group_link: str) -> str:
       https://www.facebook.com/groups/187743251645949/ -> 187743251645949
     Если пришёл уже slug/id — возвращаем как есть.
     """
-    from urllib.parse import urlparse
-
     parsed = urlparse(group_link)
     parts = [p for p in parsed.path.split("/") if p]
 
@@ -109,16 +104,13 @@ def post_job_to_api(group_name: str, text: str, link: str):
         log.error(f"Ошибка отправки в API: {e}")
 
 
-# -------------- Парсинг группы --------------
-
-
 def parse_facebook_group(group_link: str, group_name: str) -> int:
     group_id = extract_group_id(group_link)
     log.info(f"Парсинг FB группы: {group_link} (id={group_id}, pages={PAGE_LIMIT})")
 
     cookies = None
     if FB_COOKIES:
-        # facebook_scraper принимает либо dict, либо "raw" строку
+        # facebook_scraper понимает строку cookies как raw cookies
         cookies = FB_COOKIES
 
     processed = 0
@@ -154,9 +146,6 @@ def parse_facebook_group(group_link: str, group_name: str) -> int:
     return processed
 
 
-# -------------- Главный цикл --------------
-
-
 def run_parser_loop():
     log.info("🚀 Запуск Facebook парсера")
     log.info(f"API: {API_URL}")
@@ -171,7 +160,7 @@ def run_parser_loop():
 
         for group_link, group_name in groups:
             total_posts += parse_facebook_group(group_link, group_name)
-            time.sleep(2)  # небольшая пауза между группами
+            time.sleep(2)
 
         log.info(f"✅ Цикл завершен. Обработано {total_posts} постов")
         log.info(f"⏳ Ожидание {CHECK_INTERVAL_MINUTES} минут до следующей проверки...")
