@@ -3,8 +3,7 @@ import os
 import psycopg2
 from psycopg2.extras import DictCursor
 
-
-# Railway даёт DATABASE_URL, но у плагина может быть DATABASE_PUBLIC_URL
+# Railway даёт либо DATABASE_URL, либо DATABASE_PUBLIC_URL
 DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("DATABASE_PUBLIC_URL")
 
 
