@@ -6,8 +6,10 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 import asyncio
 from threading import Thread
-import sqlite3
 from datetime import datetime
+
+from db import get_conn  # <— НОВОЕ
+from psycopg2.errors import UniqueViolation  # <— для обработки дублей
 
 # Настройка логирования
 logging.basicConfig(
@@ -22,7 +24,6 @@ MANAGER_CHAT_ID = os.getenv('MANAGER_CHAT_ID')
 SHARED_SECRET = os.getenv('SHARED_SECRET', 'default-secret-key')
 PORT = int(os.getenv('PORT', 8000))
 WEB_APP_URL = os.getenv('WEB_APP_URL', 'http://localhost:8000')
-DB_PATH = os.getenv('DB_PATH', 'jobs.db')
 
 app = Flask(__name__, static_folder='static')
 CORS(app)
@@ -32,41 +33,42 @@ bot_app = None
 
 # Инициализация БД
 def init_db():
-    """Инициализация базы данных"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    # Таблица для постов/вакансий
-    cursor.execute('''
+    """Инициализация базы данных (Postgres)"""
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Таблица вакансий
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS jobs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             group_name TEXT,
             text TEXT,
             link TEXT,
             content_hash TEXT UNIQUE,
             source_type TEXT DEFAULT 'facebook',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # Таблица для FB групп
-    cursor.execute('''
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+    """)
+
+    # Таблица FB-групп
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS fb_groups (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             group_id TEXT UNIQUE,
             group_name TEXT,
-            enabled INTEGER DEFAULT 1,
-            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_content_hash ON jobs(content_hash)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_created_at ON jobs(created_at DESC)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_group_id ON fb_groups(group_id)')
-    
+            enabled BOOLEAN DEFAULT TRUE,
+            added_at TIMESTAMPTZ DEFAULT NOW()
+        );
+    """)
+
+    # Индексы
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_content_hash ON jobs(content_hash);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_fb_groups_group_id ON fb_groups(group_id);")
+
     conn.commit()
     conn.close()
-    logger.info("База данных инициализирована")
+    logger.info("База данных Postgres инициализирована")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start с кнопкой для открытия мини-апа"""
@@ -126,21 +128,36 @@ def post_job():
         content_hash = hashlib.md5(content.encode()).hexdigest()
         
         # Сохранение в БД с проверкой дубликатов
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute(
-                'INSERT INTO jobs (group_name, text, link, content_hash, source_type) VALUES (?, ?, ?, ?, ?)',
-                (group_name, text, link, content_hash, source_type)
-            )
-            conn.commit()
-        except sqlite3.IntegrityError:
-            conn.close()
-            logger.info(f"Дубликат пропущен: {group_name[:30]}...")
-            return jsonify({"status": "duplicate", "message": "Job already exists"}), 200
-        
+       from psycopg2.errors import UniqueViolation
+
+@app.route('/post', methods=['POST'])
+def post_job():
+    ...
+    # Сохранение в БД с проверкой дубликатов
+    conn = get_conn()
+    cur = conn.cursor()
+
+    try:
+        cur.execute(
+            """
+            INSERT INTO jobs (group_name, text, link, content_hash, source_type)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (group_name, text, link, content_hash, source_type),
+        )
+        conn.commit()
+    except UniqueViolation:
+        conn.rollback()
         conn.close()
+        logger.info(f"Дубликат пропущен: {group_name[:30]}...")
+        return jsonify({"status": "duplicate", "message": "Job already exists"}), 200
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        logger.error(f"Ошибка записи вакансии: {e}")
+        return jsonify({"error": "DB error"}), 500
+
+    conn.close()
         
         # Формирование сообщения для менеджера
         message = f"📘 <b>Новая вакансия из Facebook</b>\n\n"
@@ -207,27 +224,31 @@ def get_jobs():
 def get_groups():
     """Получение списка отслеживаемых FB групп"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute('SELECT id, group_id, group_name, enabled, added_at FROM fb_groups ORDER BY added_at DESC')
-        groups = cursor.fetchall()
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, group_id, group_name, enabled, added_at "
+            "FROM fb_groups ORDER BY added_at DESC"
+        )
+        rows = cur.fetchall()
         conn.close()
-        
+
         return jsonify({
             "groups": [
                 {
-                    "id": g[0],
-                    "group_id": g[1],
-                    "group_name": g[2],
-                    "enabled": bool(g[3]),
-                    "added_at": g[4]
+                    "id": row["id"],
+                    "group_id": row["group_id"],
+                    "group_name": row["group_name"],
+                    "enabled": row["enabled"],
+                    "added_at": row["added_at"].isoformat() if row["added_at"] else None,
                 }
-                for g in groups
+                for row in rows
             ]
         })
     except Exception as e:
         logger.error(f"Ошибка получения групп: {e}")
         return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/groups', methods=['POST'])
 def add_group():
@@ -251,28 +272,30 @@ def add_group():
         if not group_name:
             group_name = group_id
         
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                'INSERT INTO fb_groups (group_id, group_name) VALUES (?, ?)',
-                (group_id, group_name)
-            )
-            conn.commit()
-            new_id = cursor.lastrowid
-            conn.close()
-            
-            return jsonify({
-                "status": "success",
-                "group": {
-                    "id": new_id,
-                    "group_id": group_id,
-                    "group_name": group_name
-                }
-            })
-        except sqlite3.IntegrityError:
-            conn.close()
-            return jsonify({"error": "Group already exists"}), 409
+        conn = get_conn()
+cur = conn.cursor()
+try:
+    cur.execute(
+        "INSERT INTO fb_groups (group_id, group_name) VALUES (%s, %s) RETURNING id;",
+        (group_id, group_name),
+    )
+    new_id = cur.fetchone()["id"]
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "status": "success",
+        "group": {
+            "id": new_id,
+            "group_id": group_id,
+            "group_name": group_name,
+        }
+    })
+except UniqueViolation:
+    conn.rollback()
+    conn.close()
+    return jsonify({"error": "Group already exists"}), 409
+
             
     except Exception as e:
         logger.error(f"Ошибка добавления группы: {e}")
@@ -282,11 +305,12 @@ def add_group():
 def delete_group(group_id):
     """Удаление FB группы"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM fb_groups WHERE id = ?', (group_id,))
-        conn.commit()
-        conn.close()
+conn = get_conn()
+cur = conn.cursor()
+cur.execute("DELETE FROM fb_groups WHERE id = %s", (group_id,))
+conn.commit()
+conn.close()
+
         
         return jsonify({"status": "success"})
     except Exception as e:
@@ -303,13 +327,22 @@ def toggle_group(group_id):
         result = cursor.fetchone()
         
         if not result:
-            conn.close()
-            return jsonify({"error": "Group not found"}), 404
-        
-        new_status = 0 if result[0] else 1
-        cursor.execute('UPDATE fb_groups SET enabled = ? WHERE id = ?', (new_status, group_id))
-        conn.commit()
-        conn.close()
+conn = get_conn()
+cur = conn.cursor()
+cur.execute("SELECT enabled FROM fb_groups WHERE id = %s", (group_id,))
+row = cur.fetchone()
+
+if not row:
+    conn.close()
+    return jsonify({"error": "Group not found"}), 404
+
+current = row["enabled"]
+new_status = not current  # bool -> меняем true/false
+
+cur.execute("UPDATE fb_groups SET enabled = %s WHERE id = %s", (new_status, group_id))
+conn.commit()
+conn.close()
+
         
         return jsonify({"status": "success", "enabled": bool(new_status)})
     except Exception as e:
