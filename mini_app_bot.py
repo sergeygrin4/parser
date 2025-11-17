@@ -95,8 +95,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def run_bot():
-    """Запуск Telegram-бота. ЭТО нужно вызывать в ГЛАВНОМ потоке (через asyncio.run)."""
+def run_bot():
+    """
+    Запуск Telegram-бота (синхронно, в главном потоке).
+    БЕЗ asyncio.run, чтобы не ловить ошибки event loop.
+    """
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN не установлен, бот не будет запущен")
         return
@@ -105,8 +108,7 @@ async def run_bot():
     application.add_handler(CommandHandler("start", start_command))
 
     logger.info("Запускаю Telegram-бота...")
-    # Здесь мы уже в главном потоке, можно безопасно использовать run_polling
-    await application.run_polling()
+    application.run_polling()
 
 
 # ----------------- Flask endpoints -----------------
@@ -332,7 +334,7 @@ def receive_job():
         return jsonify({"error": "db_error"}), 500
 
 
-# ----------------- Запуск Flask (отдельная функция) -----------------
+# ----------------- Запуск Flask (используется в start_all.py) -----------------
 
 def run_flask():
     logger.info(f"Запуск Flask на порту {PORT}")
