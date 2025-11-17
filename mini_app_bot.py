@@ -1,8 +1,6 @@
 # mini_app_bot.py
 import os
 import logging
-import asyncio
-from threading import Thread
 from datetime import datetime
 
 from flask import Flask, request, jsonify, send_from_directory
@@ -58,7 +56,7 @@ def init_db():
         );
     """)
 
-    # FB-группы, которые отслеживает парсер
+    # FB-группы
     cur.execute("""
         CREATE TABLE IF NOT EXISTS fb_groups (
             id SERIAL PRIMARY KEY,
@@ -98,20 +96,17 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def run_bot():
+    """Запуск Telegram-бота. ЭТО нужно вызывать в ГЛАВНОМ потоке (через asyncio.run)."""
     if not BOT_TOKEN:
-        logger.error("BOT_TOKEN не установлен!")
+        logger.error("BOT_TOKEN не установлен, бот не будет запущен")
         return
 
     application = Application.builder().token(BOT_TOKEN).build()
-
     application.add_handler(CommandHandler("start", start_command))
 
     logger.info("Запускаю Telegram-бота...")
+    # Здесь мы уже в главном потоке, можно безопасно использовать run_polling
     await application.run_polling()
-
-
-def run_bot_thread():
-    asyncio.run(run_bot())
 
 
 # ----------------- Flask endpoints -----------------
@@ -119,11 +114,9 @@ def run_bot_thread():
 @app.route("/")
 @app.route("/index.html")
 def index():
-    # Если у тебя фронт лежит в static/index.html
+    # Если фронт лежит в static/index.html
     return send_from_directory(app.static_folder, "index.html")
 
-
-# --- API: группы ---
 
 @app.route("/api/groups", methods=["GET"])
 def get_groups():
@@ -245,8 +238,6 @@ def toggle_group(group_pk: int):
         return jsonify({"error": "db_error"}), 500
 
 
-# --- API: вакансии ---
-
 @app.route("/api/jobs", methods=["GET"])
 def get_jobs():
     """
@@ -289,8 +280,6 @@ def get_jobs():
         logger.error(f"Ошибка получения вакансий: {e}")
         return jsonify({"error": "db_error"}), 500
 
-
-# --- Endpoint, в который шлёт fb_parser ---
 
 @app.route("/post", methods=["POST"])
 def receive_job():
@@ -343,31 +332,9 @@ def receive_job():
         return jsonify({"error": "db_error"}), 500
 
 
-# ----------------- Запуск Flask -----------------
+# ----------------- Запуск Flask (отдельная функция) -----------------
 
 def run_flask():
     logger.info(f"Запуск Flask на порту {PORT}")
     logger.info(f"Web App URL: {WEB_APP_URL}")
     app.run(host="0.0.0.0", port=PORT, debug=False)
-
-
-def main():
-    if not BOT_TOKEN:
-        logger.error("BOT_TOKEN не установлен, бот не будет запущен")
-    if not MANAGER_CHAT_ID:
-        logger.error("MANAGER_CHAT_ID не установлен")
-
-    init_db()
-
-    # Бот — в отдельном потоке
-    if BOT_TOKEN:
-        bot_thread = Thread(target=run_bot_thread, daemon=True)
-        bot_thread.start()
-
-    # Flask — в основном потоке
-    run_flask()
-
-
-if __name__ == "__main__":
-    main()
-
