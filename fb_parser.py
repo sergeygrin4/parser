@@ -1,7 +1,7 @@
 import os
 import logging
 import requests
-import sqlite3
+from db import get_conn
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import time
@@ -48,7 +48,7 @@ def send_to_api(group_name: str, text: str, link: str = None):
         log.error(f"Ошибка отправки в API: {e}")
         return False
 
-def get_fb_groups_from_db():
+def get_fb_groups_from_():
     """Получает список активных FB групп из базы данных"""
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -147,7 +147,22 @@ def main():
             log.info("🔄 Начинаю цикл парсинга...")
             
             # Получаем группы из БД
-            groups = get_fb_groups_from_db()
+          def get_fb_groups_from_db():
+    """Получает список активных FB групп из Postgres"""
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT group_id, group_name FROM fb_groups WHERE enabled = TRUE"
+        )
+        rows = cur.fetchall()
+        conn.close()
+        # Возвращаем список кортежей, как и раньше
+        return [(row["group_id"], row["group_name"]) for row in rows]
+    except Exception as e:
+        log.error(f"Ошибка чтения групп из БД: {e}")
+        return []
+
             
             if not groups:
                 log.warning("⚠️ Нет активных FB групп в базе данных")
