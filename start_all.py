@@ -1,25 +1,28 @@
 # start_all.py
 from threading import Thread
+import logging
 
-from mini_app_bot import main as bot_main, init_db
-from fb_parser import main as parser_main
+from mini_app_bot import main as run_web_and_bot, init_db
+from fb_parser import run_parser_loop
 
-
-def run_parser():
-    # просто отдельный поток с бесконечным циклом парсера
-    parser_main()
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - starter - %(levelname)s - %(message)s",
+)
+log = logging.getLogger("starter")
 
 
 def main():
-    # Чтобы точно были таблицы в БД до старта парсера
+    # Инициализируем БД один раз
     init_db()
 
-    # Стартуем парсер фоном
-    parser_thread = Thread(target=run_parser, daemon=True)
+    # Запускаем парсер фоном
+    parser_thread = Thread(target=run_parser_loop, daemon=True)
     parser_thread.start()
+    log.info("FB parser запущен в фоне")
 
-    # Стартуем бота (он внутри поднимет Flask + polling)
-    bot_main()
+    # Запускаем Flask + Telegram-бота (блокирующий вызов)
+    run_web_and_bot()
 
 
 if __name__ == "__main__":
