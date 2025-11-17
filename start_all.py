@@ -1,8 +1,9 @@
 # start_all.py
 from threading import Thread
 import logging
+import asyncio
 
-from mini_app_bot import main as run_web_and_bot, init_db
+from mini_app_bot import init_db, run_flask, run_bot
 from fb_parser import run_parser_loop
 
 logging.basicConfig(
@@ -13,16 +14,21 @@ log = logging.getLogger("starter")
 
 
 def main():
-    # Инициализируем БД один раз
+    # 1. Инициализируем БД (создаём таблицы в Postgres)
     init_db()
 
-    # Запускаем парсер фоном
+    # 2. Стартуем Flask в отдельном потоке
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    log.info("Flask запущен в фоне")
+
+    # 3. Стартуем FB-парсер в отдельном потоке
     parser_thread = Thread(target=run_parser_loop, daemon=True)
     parser_thread.start()
     log.info("FB parser запущен в фоне")
 
-    # Запускаем Flask + Telegram-бота (блокирующий вызов)
-    run_web_and_bot()
+    # 4. В ГЛАВНОМ потоке запускаем Telegram-бота
+    asyncio.run(run_bot())
 
 
 if __name__ == "__main__":
