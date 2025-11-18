@@ -32,9 +32,27 @@ JOB_KEYWORDS = [
     if kw.strip()
 ]
 
-FB_COOKIES = os.getenv("FB_COOKIES", "")
+FB_COOKIES_RAW = os.getenv("FB_COOKIES", "")
 
 PAGE_LIMIT = int(os.getenv("FB_PAGE_LIMIT", "5"))
+
+
+def parse_cookies(raw: str) -> dict:
+    """
+    Превращаем строку вида
+    'c_user=...; xs=...; datr=...'
+    в dict для facebook_scraper: {"c_user": "...", "xs": "...", ...}
+    """
+    cookies = {}
+    for part in raw.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        cookies[name.strip()] = value.strip()
+    return cookies
 
 
 def extract_group_id(group_link: str) -> str:
@@ -109,9 +127,9 @@ def parse_facebook_group(group_link: str, group_name: str) -> int:
     log.info(f"Парсинг FB группы: {group_link} (id={group_id}, pages={PAGE_LIMIT})")
 
     cookies = None
-    if FB_COOKIES:
-        # facebook_scraper понимает строку cookies как raw cookies
-        cookies = FB_COOKIES
+    if FB_COOKIES_RAW:
+        cookies = parse_cookies(FB_COOKIES_RAW)
+        log.debug(f"Использую cookies: {list(cookies.keys())}")
 
     processed = 0
 
@@ -150,7 +168,7 @@ def run_parser_loop():
     log.info("🚀 Запуск Facebook парсера")
     log.info(f"API: {API_URL}")
     log.info(f"Ключевые слова: {JOB_KEYWORDS}")
-    log.info(f"Cookies: {'✅ Установлены' if FB_COOKIES else '⛔️ НЕ заданы'}")
+    log.info(f"Cookies: {'✅ Установлены' if FB_COOKIES_RAW else '⛔️ НЕ заданы'}")
     log.info(f"⏰ Интервал проверки: {CHECK_INTERVAL_MINUTES} минут")
 
     while True:
